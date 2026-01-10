@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Scene</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #87ceeb;
+            /* Match scene background */
+            font-family: sans-serif;
+        }
+
+        #threejs-container {
+            width: 100%;
+            height: 100vh;
+            display: block;
+        }
+
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 100;
+        }
+
+        .control-group {
+            margin-bottom: 10px;
+        }
+
+        .control-group:last-child {
+            margin-bottom: 0;
+        }
+
+        label {
+            display: inline-block;
+            margin-right: 5px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="threejs-container"></div>
+
+    <div id="controls">
+        <div class="control-group">
+            <label for="speed-select">Speed:</label>
+            <select id="speed-select">
+                <option value="1">1x</option>
+                <option value="10" selected>10x</option>
+                <option value="100">100x</option>
+            </select>
+        </div>
+        <div class="control-group">
+            <label for="trace-toggle">Trace Paths:</label>
+            <input type="checkbox" id="trace-toggle" checked>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
+
+    <script>
+        // Wrap in a function to avoid global scope pollution and ensure DOM is ready
+        (function () {
+            try {
+                const container = document.getElementById('threejs-container');
+                if (!container) {
+                    console.error("Three.js container not found!");
+                    return;
+                }
+
+                // UI Controls
+                const speedSelect = document.getElementById('speed-select');
+                const traceToggle = document.getElementById('trace-toggle');
+                let speedMultiplier = 10;
+                let isTracingEnabled = true;
+
+                speedSelect.addEventListener('change', (e) => {
+                    speedMultiplier = parseInt(e.target.value, 10);
+                });
+
+                traceToggle.addEventListener('change', (e) => {
+                    isTracingEnabled = e.target.checked;
+                    // Toggle visibility of existing lines
+                    if (typeof line2 !== 'undefined') line2.visible = isTracingEnabled;
+                    if (typeof line3 !== 'undefined') line3.visible = isTracingEnabled;
+                });
+
+                // RubiksCube Class Definition
+                class RubiksCube extends THREE.Group {
+                    constructor() {
+                        super();
+                        this.colors = {
+                            red: new THREE.Color(0xff0000),
+                            green: new THREE.Color(0x00ff00),
+                            blue: new THREE.Color(0x0000ff),
+                            white: new THREE.Color(0xffffff),
+                            yellow: new THREE.Color(0xffff00),
+                            orange: new THREE.Color(0xff5500)
+                        };
+
+                        this.cubelets = [];
+                        this.createCubelets();
+
+                        // Animation state
+                        this.isRotating = false;
+                        this.rotationAxis = new THREE.Vector3();
+                        this.rotationAngle = 0;
+                        this.targetAngle = Math.PI / 2;
+                        this.baseRotationSpeed = THREE.MathUtils.degToRad(1); // 1 degree per frame base speed
+                        this.activeCubelets = [];
+                        this.pivot = new THREE.Group();
+                        // Do not add pivot in constructor to avoid mysterious error
+
+                        this.anchoredCorner = null;
+                        this.isCounterRotating = false;
+                    }
+
+                    createCubelets() {
+                        const spacing = 1.05;
+
+                        const applyColor = (geometry, color) => {
+                            const count = geometry.attributes.position.count;
+                            const colors = [];
+                            for (let i = 0; i < count; i++) {
+                                colors.push(color.r, color.g, color.b);
+                            }
+                            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+                        };
+
+                        const createFace = (x, y, z, rx, ry, rz, color) => {
+                            const geometry = new THREE.PlaneGeometry(1, 1);
+                            geometry.rotateX(rx);
+                            geometry.rotateY(ry);
+                            geometry.rotateZ(rz);
+                            geometry.translate(x, y, z);
+                            applyColor(geometry, color);
+                            return geometry;
+                        };
+
+                        for (let x = -1; x <= 1; x++) {
+                            for (let y = -1; y <= 1; y++) {
+                                for (let z = -1; z <= 1; z++) {
+                                    const isCenter = (Math.abs(x) + Math.abs(y) + Math.abs(z)) === 1;
+                                    const isEdge = (Math.abs(x) + Math.abs(y) + Math.abs(z)) === 2;
+                                    const isCorner = (Math.abs(x) + Math.abs(y) + Math.abs(z)) === 3;
+
+                                    if (!isCenter && !isEdge && !isCorner) continue;
+
+                                    const geometries = [];
+                                    const px = x * spacing;
+                                    const py = y * spacing;
+                                    const pz = z * spacing;
+
+                                    if (x === 1) geometries.push(createFace(0.5, 0, 0, 0, Math.PI / 2, 0, this.colors.red));
+                                    if (x === -1) geometries.push(createFace(-0.5, 0, 0, 0, -Math.PI / 2, 0, this.colors.orange));
+                                    if (y === 1) geometries.push(createFace(0, 0.5, 0, -Math.PI / 2, 0, 0, this.colors.white));
+                                    if (y === -1) geometries.push(createFace(0, -0.5, 0, Math.PI / 2, 0, 0, this.colors.yellow));
+                                    if (z === 1) geometries.push(createFace(0, 0, 0.5, 0, 0, 0, this.colors.green));
+                                    if (z === -1) geometries.push(createFace(0, 0, -0.5, 0, Math.PI, 0, this.colors.blue));
+
+                                    if (isCorner) {
+                                        const legGeom = this.createCornerLeg(x, y, z);
+                                        geometries.push(legGeom);
+                                    }
+
+                                    if (geometries.length > 0) {
+                                        // Use THREE.BufferGeometryUtils.mergeBufferGeometries for r128
+                                        const mergedGeometry = THREE.BufferGeometryUtils.mergeBufferGeometries(geometries, false);
+                                        const material = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+                                        const mesh = new THREE.Mesh(mergedGeometry, material);
+                                        mesh.position.set(px, py, pz);
+                                        mesh.userData = { initialGrid: { x, y, z } };
+                                        if (mesh) {
+                                            this.add(mesh);
+                                            this.cubelets.push(mesh);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    createCornerLeg(x, y, z) {
+                        const length = 2.25;
+                        const width = 0.5;
+
+                        const r = width / Math.sqrt(3);
+                        const a = width / (2 * Math.sqrt(3));
+
+                        const tubeGeoms = [];
+
+                        const applyColor = (geometry, color) => {
+                            const count = geometry.attributes.position.count;
+                            const colors = [];
+                            for (let i = 0; i < count; i++) {
+                                colors.push(color.r, color.g, color.b);
+                            }
+                            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+                        };
+
+                        const diagonal = new THREE.Vector3(x, y, z).normalize();
+                        const zComponent = new THREE.Vector3(0, 0, z);
+                        const projZ = new THREE.Vector3().copy(zComponent).sub(
+                            new THREE.Vector3().copy(diagonal).multiplyScalar(zComponent.dot(diagonal))
+                        ).normalize();
+
+                        const yAxis = diagonal;
+                        const zAxis = projZ;
+                        const xAxis = new THREE.Vector3().crossVectors(yAxis, zAxis).normalize();
+
+                        const rotationMatrix = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+
+                        const makeFace = (angle) => {
+                            const g = new THREE.PlaneGeometry(width, length);
+                            g.rotateY(angle);
+                            g.translate(a * Math.sin(angle), 0, a * Math.cos(angle));
+                            return g;
+                        };
+
+                        const g1 = makeFace(0);
+                        const g2 = makeFace(2 * Math.PI / 3);
+                        const g3 = makeFace(4 * Math.PI / 3);
+
+                        const processLegFace = (geometry) => {
+                            geometry.applyMatrix4(rotationMatrix);
+
+                            geometry.computeVertexNormals();
+                            const normalAttribute = geometry.attributes.normal;
+                            const normal = new THREE.Vector3(normalAttribute.getX(0), normalAttribute.getY(0), normalAttribute.getZ(0));
+
+                            let bestDot = -Infinity;
+                            let bestColor = this.colors.white;
+
+                            const dotX = normal.dot(new THREE.Vector3(x, 0, 0));
+                            if (dotX > bestDot) {
+                                bestDot = dotX;
+                                bestColor = x > 0 ? this.colors.red : this.colors.orange;
+                            }
+
+                            const dotY = normal.dot(new THREE.Vector3(0, y, 0));
+                            if (dotY > bestDot) {
+                                bestDot = dotY;
+                                bestColor = y > 0 ? this.colors.white : this.colors.yellow;
+                            }
+
+                            const dotZ = normal.dot(new THREE.Vector3(0, 0, z));
+                            if (dotZ > bestDot) {
+                                bestDot = dotZ;
+                                bestColor = z > 0 ? this.colors.green : this.colors.blue;
+                            }
+
+                            applyColor(geometry, bestColor);
+                            geometry.translate(diagonal.x * length / 2, diagonal.y * length / 2, diagonal.z * length / 2);
+                            return geometry;
+                        };
+
+                        tubeGeoms.push(processLegFace(g1));
+                        tubeGeoms.push(processLegFace(g2));
+                        tubeGeoms.push(processLegFace(g3));
+
+                        // Use THREE.BufferGeometryUtils.mergeBufferGeometries for r128
+                        return THREE.BufferGeometryUtils.mergeBufferGeometries(tubeGeoms);
+                    }
+
+                    update() {
+                        if (this.isRotating) {
+                            this.animateRotation();
+                        } else {
+                            this.startRandomRotation();
+                        }
+                    }
+
+                    startRandomRotation() {
+                        // Ensure pivot is added
+                        if (this.pivot.parent !== this) {
+                            this.add(this.pivot);
+                        }
+
+                        const axisIdx = Math.floor(Math.random() * 3);
+                        // Restrict to outer faces (motorized core simulation): -1 or 1, never 0
+                        const slice = Math.random() < 0.5 ? -1 : 1;
+
+                        this.rotationAxis.set(0, 0, 0);
+                        if (axisIdx === 0) this.rotationAxis.x = 1;
+                        else if (axisIdx === 1) this.rotationAxis.y = 1;
+                        else this.rotationAxis.z = 1;
+
+                        this.activeCubelets = [];
+                        const epsilon = 0.1;
+
+                        // Check if this rotation involves the anchored corner
+                        this.isCounterRotating = false;
+                        let anchoredCubeletIncluded = false;
+
+                        for (const cubelet of this.cubelets) {
+                            const pos = cubelet.position.clone();
+                            let val;
+                            if (axisIdx === 0) val = pos.x;
+                            else if (axisIdx === 1) val = pos.y;
+                            else val = pos.z;
+
+                            if (Math.abs(val - slice * 1.05) < epsilon) {
+                                this.activeCubelets.push(cubelet);
+
+                                // Check if this is the anchored cubelet
+                                if (this.anchoredCorner &&
+                                    cubelet.userData.initialGrid.x === this.anchoredCorner.x &&
+                                    cubelet.userData.initialGrid.y === this.anchoredCorner.y &&
+                                    cubelet.userData.initialGrid.z === this.anchoredCorner.z) {
+                                    anchoredCubeletIncluded = true;
+                                }
+                            }
+                        }
+
+                        if (anchoredCubeletIncluded) {
+                            this.isCounterRotating = true;
+                        }
+
+                        if (this.activeCubelets.length > 0) {
+                            this.pivot.rotation.set(0, 0, 0);
+                            this.pivot.position.set(0, 0, 0);
+
+                            for (const cubelet of this.activeCubelets) {
+                                if (cubelet) {
+                                    this.pivot.attach(cubelet);
+                                }
+                            }
+
+                            this.isRotating = true;
+                            this.rotationAngle = 0;
+                        }
+                    }
+
+                    animateRotation() {
+                        // Use global speedMultiplier
+                        const currentSpeed = this.baseRotationSpeed * speedMultiplier;
+
+                        this.rotationAngle += currentSpeed;
+                        this.pivot.rotateOnAxis(this.rotationAxis, currentSpeed);
+
+                        if (this.isCounterRotating) {
+                            // Counter-rotate the whole cube to keep the anchored face stationary relative to parent
+                            this.rotateOnAxis(this.rotationAxis, -currentSpeed);
+                        }
+
+                        if (this.rotationAngle >= this.targetAngle) {
+                            this.pivot.updateMatrixWorld();
+
+                            const q = new THREE.Quaternion();
+                            q.setFromAxisAngle(this.rotationAxis, this.targetAngle);
+                            this.pivot.quaternion.copy(q);
+                            this.pivot.updateMatrixWorld();
+
+                            if (this.isCounterRotating) {
+                                // Snap the whole cube rotation? 
+                                // It's better to just let it be, as it accumulates. 
+                                // But for precision, maybe we should snap?
+                                // For now, let's rely on the continuous rotation.
+                                // Actually, we should probably ensure the pivot rotation is exactly 90 deg first.
+                            }
+
+                            const toDetach = [...this.activeCubelets];
+                            for (const cubelet of toDetach) {
+                                if (cubelet) {
+                                    this.attach(cubelet);
+                                    cubelet.position.x = Math.round(cubelet.position.x / 1.05) * 1.05;
+                                    cubelet.position.y = Math.round(cubelet.position.y / 1.05) * 1.05;
+                                    cubelet.position.z = Math.round(cubelet.position.z / 1.05) * 1.05;
+                                    cubelet.updateMatrix();
+                                }
+                            }
+
+                            this.isRotating = false;
+                            this.activeCubelets = [];
+                            this.isCounterRotating = false;
+                        }
+                    }
+
+                    setAnchoredCorner(x, y, z) {
+                        this.anchoredCorner = { x, y, z };
+                    }
+                }
+
+                // Scene setup
+                const scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x87ceeb);
+
+                // Camera setup
+                const camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+                camera.position.set(-5, 5, 5); // Adjusted camera to see the cube better
+
+                // Renderer setup
+                const renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(container.clientWidth, container.clientHeight);
+                container.appendChild(renderer.domElement);
+
+                // Lights
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+                scene.add(ambientLight);
+
+                // Grid
+                const gridHelper = new THREE.GridHelper(50, 50, 0xffffff, 0x7b7b7b);
+                scene.add(gridHelper);
+
+                // Rubik's Cube
+                const rubiksCube = new RubiksCube();
+                scene.add(rubiksCube);
+
+                // Position Anchor Cube
+                // 1. Rotate so Orange face (originally at x=-1) is on bottom (y=-1)
+                // Rotate +90 degrees around Z axis
+                rubiksCube.rotation.z = Math.PI / 2;
+                rubiksCube.updateMatrixWorld(); // Ensure rotation is applied for bounding box calculation
+
+                // 2. Raise so tips of bottom legs touch floor (y=0)
+                const box = new THREE.Box3().setFromObject(rubiksCube);
+                const minY = box.min.y;
+                rubiksCube.position.y = -minY;
+
+                // 3. Add black block base
+                // Gap between floor (y=0) and orange face (approx y=0.8) is ~0.8 units
+                const baseHeight = 0.8;
+                const baseGeometry = new THREE.BoxGeometry(1, baseHeight, 1);
+                const baseMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 });
+                const base = new THREE.Mesh(baseGeometry, baseMaterial);
+                base.position.y = baseHeight / 2; // Sit on floor
+                scene.add(base);
+
+                // 4. Add Load Cube
+                const loadCube = new RubiksCube();
+                // Find the anchor cubelet at grid position (1, 1, 1) - top corner opposite to the one on floor
+                // Note: The cube was rotated 90 deg around Z.
+                // Original (1, 1, 1) is now at (-1, 1, 1) in world space relative to cube center?
+                // Let's rely on initialGrid userData.
+                const anchorCorner = rubiksCube.cubelets.find(c =>
+                    c.userData.initialGrid.x === 1 &&
+                    c.userData.initialGrid.y === 1 &&
+                    c.userData.initialGrid.z === 1
+                );
+
+                let thirdCube; // Define thirdCube in outer scope
+
+                if (anchorCorner) {
+                    // Calculate position for Load Cube
+                    // Direction of the leg is along the diagonal (1, 1, 1) relative to the cubelet
+                    const diagonal = new THREE.Vector3(1, 1, 1).normalize();
+                    // Distance: 
+                    // Leg length = 2.25
+                    // Cubelet center to leg tip = 2.25 (as analyzed)
+                    // We want Load Cube's leg (pointing in -1, -1, -1) to touch Anchor's leg (pointing in 1, 1, 1)
+                    // So Load Cube center should be at:
+                    // AnchorCornerPos + (AnchorLegLength + LoadLegLength) * diagonal
+                    // But wait, Load Cube center is 0 relative to itself.
+                    // Its leg starts at its corner (-1, -1, -1) and points in (-1, -1, -1).
+                    // So we need to position Load Cube such that its (-1, -1, -1) leg tip touches Anchor's (1, 1, 1) leg tip.
+
+                    // Distance from center to leg tip along diagonal:
+                    // Cubelet offset from center = 1.05 * sqrt(3) approx 1.82? No.
+                    // Cubelet pos is (1.05, 1.05, 1.05).
+                    // Leg tip from Cubelet pos is 2.25 * diagonal.
+                    // So Leg tip from Cube center is (1.05, 1.05, 1.05) + 2.25 * diagonal.
+
+                    // For Load Cube, we want its (-1, -1, -1) leg tip to be at that same point.
+                    // Load Cube's (-1, -1, -1) leg tip is at:
+                    // LoadCubePos + (-1.05, -1.05, -1.05) + 2.25 * (-diagonal).
+
+                    // So: AnchorTip = LoadTip
+                    // (1.05, 1.05, 1.05) + 2.25 * diagonal = LoadCubePos - (1.05, 1.05, 1.05) - 2.25 * diagonal
+                    // LoadCubePos = 2 * (1.05, 1.05, 1.05) + 4.5 * diagonal
+
+                    const spacing = 1.05;
+                    const cornerPos = new THREE.Vector3(spacing, spacing, spacing);
+                    const legLength = 2.25;
+                    const offset = diagonal.clone().multiplyScalar(legLength);
+
+                    const loadCubePos = cornerPos.clone().add(offset).add(offset).add(cornerPos);
+
+                    // Attach loadCube to anchorCorner
+                    // We need to add it to the anchorCorner mesh so it moves with it
+                    anchorCorner.add(loadCube);
+                    loadCube.position.copy(loadCubePos);
+
+                    // Adjust rotation of Load Cube?
+                    // If we want legs to touch tip-to-tip, and they are aligned along the diagonal,
+                    // then Load Cube should be unrotated relative to Anchor (so its -1,-1,-1 leg points opposite to 1,1,1).
+                    // Yes, default rotation is fine.
+
+                    // Set anchored corner for Load Cube
+                    // The corner at (-1, -1, -1) is attached to the anchor
+                    loadCube.setAnchoredCorner(-1, -1, -1);
+
+                    // 5. Add Third Cube
+                    thirdCube = new RubiksCube();
+                    // Find the Load Cube's corner cubelet at grid position (1, 1, 1) - opposite to its anchor
+                    const loadCorner = loadCube.cubelets.find(c =>
+                        c.userData.initialGrid.x === 1 &&
+                        c.userData.initialGrid.y === 1 &&
+                        c.userData.initialGrid.z === 1
+                    );
+
+                    if (loadCorner) {
+                        // Calculate position for Third Cube
+                        // Same logic as before: we want Third Cube's (-1, -1, -1) leg to touch Load Cube's (1, 1, 1) leg.
+                        // Since we are attaching to loadCorner, the relative position calculation is identical to the previous one.
+
+                        const thirdCubePos = cornerPos.clone().add(offset).add(offset).add(cornerPos);
+
+                        loadCorner.add(thirdCube);
+                        thirdCube.position.copy(thirdCubePos);
+
+                        // Set anchored corner for Third Cube
+                        // It is attached via its (-1, -1, -1) corner to the Load Cube
+                        thirdCube.setAnchoredCorner(-1, -1, -1);
+                    } else {
+                        console.error("Could not find load corner cubelet");
+                    }
+                } else {
+                    console.error("Could not find anchor corner cubelet");
+                }
+
+                // 6. Trace Paths
+                const MAX_POINTS = 1000000; // 1 million points for "infinite" history
+                const path2Points = new Float32Array(MAX_POINTS * 3);
+                const path3Points = new Float32Array(MAX_POINTS * 3);
+
+                let path2Index = 0;
+                let path3Index = 0;
+
+                const lastPoint2 = new THREE.Vector3();
+                const lastPoint3 = new THREE.Vector3();
+
+                const line2Geometry = new THREE.BufferGeometry();
+                line2Geometry.setAttribute('position', new THREE.BufferAttribute(path2Points, 3));
+                line2Geometry.setDrawRange(0, 0);
+                const line2Material = new THREE.LineBasicMaterial({ color: 0x00ffff }); // Cyan for Cube 2
+                const line2 = new THREE.Line(line2Geometry, line2Material);
+                line2.frustumCulled = false; // Ensure it's always rendered
+                scene.add(line2);
+
+                const line3Geometry = new THREE.BufferGeometry();
+                line3Geometry.setAttribute('position', new THREE.BufferAttribute(path3Points, 3));
+                line3Geometry.setDrawRange(0, 0);
+                const line3Material = new THREE.LineBasicMaterial({ color: 0xff00ff }); // Magenta for Cube 3
+                const line3 = new THREE.Line(line3Geometry, line3Material);
+                line3.frustumCulled = false;
+                scene.add(line3);
+
+                // Controls
+                const controls = new THREE.OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.autoRotate = false;
+
+                // Window resize handling
+                window.addEventListener('resize', onWindowResize, false);
+
+                function onWindowResize() {
+                    if (container) {
+                        camera.aspect = container.clientWidth / container.clientHeight;
+                        camera.updateProjectionMatrix();
+                        renderer.setSize(container.clientWidth, container.clientHeight);
+                    }
+                }
+
+                // Animation loop
+                function animate() {
+                    requestAnimationFrame(animate);
+                    controls.update();
+
+                    if (rubiksCube) {
+                        rubiksCube.update();
+                    }
+                    if (typeof loadCube !== 'undefined' && loadCube) {
+                        loadCube.update();
+
+                        // Trace path for Load Cube
+                        if (isTracingEnabled) {
+                            const center = new THREE.Vector3();
+                            loadCube.getWorldPosition(center);
+
+                            if (path2Index === 0 || center.distanceTo(lastPoint2) > 0.05) {
+                                if (path2Index < MAX_POINTS) {
+                                    path2Points[path2Index * 3] = center.x;
+                                    path2Points[path2Index * 3 + 1] = center.y;
+                                    path2Points[path2Index * 3 + 2] = center.z;
+                                    path2Index++;
+                                    line2Geometry.setDrawRange(0, path2Index);
+                                    line2Geometry.attributes.position.needsUpdate = true;
+                                    lastPoint2.copy(center);
+                                }
+                            }
+                        }
+                    }
+                    if (typeof thirdCube !== 'undefined' && thirdCube) {
+                        thirdCube.update();
+
+                        // Trace path for Third Cube
+                        if (isTracingEnabled) {
+                            const center = new THREE.Vector3();
+                            thirdCube.getWorldPosition(center);
+
+                            if (path3Index === 0 || center.distanceTo(lastPoint3) > 0.05) {
+                                if (path3Index < MAX_POINTS) {
+                                    path3Points[path3Index * 3] = center.x;
+                                    path3Points[path3Index * 3 + 1] = center.y;
+                                    path3Points[path3Index * 3 + 2] = center.z;
+                                    path3Index++;
+                                    line3Geometry.setDrawRange(0, path3Index);
+                                    line3Geometry.attributes.position.needsUpdate = true;
+                                    lastPoint3.copy(center);
+                                }
+                            }
+                        }
+                    }
+
+                    renderer.render(scene, camera);
+                }
+
+                animate();
+            } catch (e) {
+                console.error("Simulation Error:", e);
+            }
+        })();
+    </script>
+</body>
+
+</html>
